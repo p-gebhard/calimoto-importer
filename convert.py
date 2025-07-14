@@ -83,6 +83,26 @@ def _fetch_from_open_topo_data(uncached_pts: list, cache: dict) -> list[float | 
     return fetched
 
 
+def _interpolate_missing(points: list, cache: dict):
+    out = [cache.get(_cache_key(p)) for p in points]
+    first = next((v for v in out if v is not None), 0.0)
+    for i, v in enumerate(out):
+        if v is None:
+            out[i] = first
+        else:
+            break
+    start = -1
+    for i, v in enumerate(out):
+        if v is None and start == -1:
+            start = i
+        elif v is not None and start != -1:
+            delta = (out[i] - out[start - 1]) / (i - start + 1)
+            for j in range(start, i):
+                out[j] = out[j - 1] + delta
+            start = -1
+    return [float(v or 0) for v in out]
+
+
 def _fetch_elevations(points: list) -> list[float]:
     cache: dict = json.loads(CACHE_FILE.read_text()) if CACHE_FILE.exists() else {}
 
@@ -104,7 +124,7 @@ def _fetch_elevations(points: list) -> list[float]:
             print("falling back to opentopodata ...", end=" ", flush=True)
             _fetch_from_open_topo_data(uncached_pts, cache)
 
-    return [float(cache.get(_cache_key(p), 0)) for p in points]
+    return _interpolate_missing(points, cache)
 
 
 def main():
