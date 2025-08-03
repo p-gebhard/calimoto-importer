@@ -1,4 +1,6 @@
 requests
 python-dotenv
+staticmap
+Pillow
 gpxpy
 lxml

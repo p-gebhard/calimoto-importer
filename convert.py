@@ -59,9 +59,7 @@ def _fetch_from_open_elevation(uncached_pts: list, cache: dict) -> list[float | 
             r = requests.post(
                 "https://api.open-elevation.com/api/v1/lookup",
                 json={
-                    "locations": [
-                        {"latitude": p[0], "longitude": p[1]} for p in chunk
-                    ]
+                    "locations": [{"latitude": p[0], "longitude": p[1]} for p in chunk]
                 },
                 timeout=30,
             )
@@ -69,7 +67,9 @@ def _fetch_from_open_elevation(uncached_pts: list, cache: dict) -> list[float | 
             vals = [item["elevation"] for item in r.json()["results"]]
             fetched.extend(vals)
             for j, v in enumerate(vals):
-                if v != 0:  # open-elevation returns 0 for missing data, not actual sea level
+                if (
+                    v != 0
+                ):  # open-elevation returns 0 for missing data, not actual sea level
                     cache[_cache_key(uncached_pts[offset + j])] = v
             CACHE_FILE.write_text(json.dumps(cache))
         except Exception:
@@ -144,7 +144,7 @@ def _fetch_elevations(points: list) -> list[float]:
 
         fetched = _fetch_from_open_elevation(uncached_pts, cache)
 
-        if all(v is None or v == 0 for v in fetched):
+        if all(not v for v in fetched):
             print("falling back to opentopodata ...", end=" ", flush=True)
             _fetch_from_open_topo_data(uncached_pts, cache)
 
@@ -154,12 +154,12 @@ def _fetch_elevations(points: list) -> list[float]:
 def _simulate_ride(distances: list[float], angles: list[float]) -> tuple[list, list]:
     def _max_speed(angle):
         if angle > 75:
-            return 4.2   # ~15 km/h  roundabout / sharp turn
+            return 4.2  # ~15 km/h  roundabout / sharp turn
         if angle > 50:
-            return 8.3   # ~30 km/h  medium curve
+            return 8.3  # ~30 km/h  medium curve
         if angle > 25:
             return 16.7  # ~60 km/h  light curve
-        return 22.2      # ~80 km/h  straight
+        return 22.2  # ~80 km/h  straight
 
     rng = random.Random()
     speeds, dates, cum_t = [], [], 0.0
