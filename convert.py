@@ -9,6 +9,8 @@ Usage:
 
 import argparse
 import json
+import math
+import random
 import requests
 import time
 
@@ -17,6 +19,27 @@ from pathlib import Path
 
 
 CACHE_FILE = Path(__file__).parent / "elevation_cache.json"
+
+
+def _haversine_m(p1, p2) -> float:
+    r = 6_371_000
+    lat1, lon1 = math.radians(p1[0]), math.radians(p1[1])
+    lat2, lon2 = math.radians(p2[0]), math.radians(p2[1])
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    )
+    return r * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _turn_angle(p1, p2, p3) -> float:
+    a, b, c = _haversine_m(p2, p3), _haversine_m(p1, p3), _haversine_m(p1, p2)
+    if a == 0 or c == 0:
+        return 0.0
+    return 180 - math.degrees(
+        math.acos(max(-1.0, min(1.0, (a**2 + c**2 - b**2) / (2 * a * c))))
+    )
 
 
 def _chunks(lst, n):
@@ -46,7 +69,8 @@ def _fetch_from_open_elevation(uncached_pts: list, cache: dict) -> list[float | 
             vals = [item["elevation"] for item in r.json()["results"]]
             fetched.extend(vals)
             for j, v in enumerate(vals):
-                cache[_cache_key(uncached_pts[offset + j])] = v
+                if v != 0:  # open-elevation returns 0 for missing data, not actual sea level
+                    cache[_cache_key(uncached_pts[offset + j])] = v
             CACHE_FILE.write_text(json.dumps(cache))
         except Exception:
             fetched.extend([None] * len(chunk))
@@ -127,6 +151,37 @@ def _fetch_elevations(points: list) -> list[float]:
     return _interpolate_missing(points, cache)
 
 
+def _simulate_ride(distances: list[float], angles: list[float]) -> tuple[list, list]:
+    def _max_speed(angle):
+        if angle > 75:
+            return 4.2   # ~15 km/h  roundabout / sharp turn
+        if angle > 50:
+            return 8.3   # ~30 km/h  medium curve
+        if angle > 25:
+            return 16.7  # ~60 km/h  light curve
+        return 22.2      # ~80 km/h  straight
+
+    rng = random.Random()
+    speeds, dates, cum_t = [], [], 0.0
+    prev = rng.normalvariate(3.0, 1.25)
+    speeds.append(prev)
+    dates.append(cum_t)
+
+    for dist, angle in zip(distances, angles):
+        ms = _max_speed(angle)
+        s = max(0.1, rng.normalvariate(ms - (ms - prev) / 3, 1.25))
+        speeds.append(s)
+        cum_t += dist / s
+        dates.append(cum_t)
+        prev = s
+
+    s = max(0.1, rng.normalvariate(3.0, 1.25))
+    speeds.append(s)
+    cum_t += (distances[-1] if distances else 0) / s
+    dates.append(cum_t)
+    return speeds, dates
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Convert a planned route to a completed tour"
@@ -135,7 +190,10 @@ def main():
         "input", help="Planned route folder (output of export.py --type planned)"
     )
     parser.add_argument("--out", required=True, metavar="DIR", help="Output folder")
-
+    parser.add_argument(
+        "--date", default=None, metavar="YYYY-MM-DD", help="Ride date (default: today)"
+    )
+    parser.add_argument("--name", default=None, help="Ride name (default: from route)")
     args = parser.parse_args()
 
     in_dir = Path(args.input)
@@ -148,22 +206,29 @@ def main():
     print(f"Input: {in_dir.name}  ({len(points)} points)")
 
     altitudes = _fetch_elevations(points)
-    distances = []
-    angles = []
-    speeds = []
-    dates = []
+    distances = [_haversine_m(points[i], points[i + 1]) for i in range(len(points) - 1)]
+    angles = [
+        _turn_angle(points[i], points[i + 1], points[i + 2])
+        for i in range(len(points) - 2)
+    ]
+    angles.append(0.0)
+    speeds, dates = _simulate_ride(distances, angles)
 
-    ride_date = datetime.now().strftime("%Y-%m-%d")
+    ride_date = args.date or datetime.now().strftime("%Y-%m-%d")
     tour = {
-        "name": f"Tour vom {ride_date}",
-        "distance": 0,
-        "duration": 0,
-        "speedAverage": 0,
-        "speedMax": 0,
-        "altitudeMax": 0,
-        "altitudeMin": 0,
-        "altitudeIncline": 0,
-        "altitudeDecline": 0,
+        "name": args.name or meta.get("name", f"Tour vom {ride_date}"),
+        "distance": int(sum(distances)),
+        "duration": round(dates[-1]),
+        "speedAverage": round(sum(speeds) / len(speeds), 1),
+        "speedMax": round(max(speeds), 2),
+        "altitudeMax": round(max(altitudes)),
+        "altitudeMin": round(min(altitudes)),
+        "altitudeIncline": round(
+            sum(max(0, b - a) for a, b in zip(altitudes, altitudes[1:]))
+        ),
+        "altitudeDecline": round(
+            sum(max(0, a - b) for a, b in zip(altitudes, altitudes[1:]))
+        ),
         "regionCode": meta.get("regionCode", "EU_NO_0000"),
         "language": meta.get("language", "de"),
         "typeTrack": "TRACKING",
