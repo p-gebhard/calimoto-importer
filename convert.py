@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 
-CACHE_FILE = Path(__file__).parent / "elevation_cache.json"
+CACHE_FILE   = Path(__file__).parent / "elevation_cache.json"
+PROFILE_FILE = Path(__file__).parent / "ride_profile.json"
 
 
 def _haversine_m(p1, p2) -> float:
@@ -151,33 +152,39 @@ def _fetch_elevations(points: list) -> list[float]:
     return _interpolate_missing(points, cache)
 
 
+def _load_profile() -> dict:
+    if not PROFILE_FILE.exists():
+        raise FileNotFoundError(f"{PROFILE_FILE} not found — run calibrate.py first")
+    return json.loads(PROFILE_FILE.read_text())
+
+
 def _simulate_ride(distances: list[float], angles: list[float]) -> tuple[list, list]:
-    def _max_speed(angle):
-        if angle > 75:
-            return 4.2  # ~15 km/h  roundabout / sharp turn
-        if angle > 50:
-            return 8.3  # ~30 km/h  medium curve
-        if angle > 25:
-            return 16.7  # ~60 km/h  light curve
-        return 22.2  # ~80 km/h  straight
+    profile = _load_profile()
+
+    def _bin(angle) -> dict:
+        if angle > 75: return profile["sharp"]
+        if angle > 50: return profile["medium"]
+        if angle > 25: return profile["light"]
+        return             profile["straight"]
 
     rng = random.Random()
+    start = _bin(0)
     speeds, dates, cum_t = [], [], 0.0
-    prev = rng.normalvariate(3.0, 1.25)
+    prev = max(0.1, rng.normalvariate(start["mean"] * 0.15, start["stdev"]))
     speeds.append(prev)
     dates.append(cum_t)
 
     for dist, angle in zip(distances, angles):
-        ms = _max_speed(angle)
-        s = max(0.1, rng.normalvariate(ms - (ms - prev) / 3, 1.25))
+        b  = _bin(angle)
+        ms = b["mean"]
+        s  = max(0.1, rng.normalvariate(ms - (ms - prev) / 3, b["stdev"]))
         speeds.append(s)
         cum_t += dist / s
         dates.append(cum_t)
         prev = s
 
-    s = max(0.1, rng.normalvariate(3.0, 1.25))
-    speeds.append(s)
-    cum_t += (distances[-1] if distances else 0) / s
+    speeds.append(prev)
+    cum_t += (distances[-1] if distances else 0) / prev
     dates.append(cum_t)
     return speeds, dates
 

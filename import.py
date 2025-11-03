@@ -84,7 +84,7 @@ def upload_file(session_token: str, filename: str, data: bytes) -> dict:
 def render_preview(points: list) -> bytes:
     m = StaticMap(600, 400)
     coords = [(lon, lat) for lat, lon in points]
-    m.add_line(Line(coords, "#e5433a", 3))
+    m.add_line(Line(coords, "#0066cc", 3))
     img = m.render()
     buf = io.BytesIO()
     img.save(buf, format="PNG")
