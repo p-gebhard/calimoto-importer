@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
 Export completed Calimoto rides to a local folder.
-
-Usage:
-    python export.py --out nordkapp --from 2021-07-04 --to 2021-07-22
-    python export.py --out all_rides
-    python export.py --out recent --limit 10
-
-Credentials are read from .env (CALIMOTO_USERNAME / CALIMOTO_PASSWORD).
 """
 
 import argparse
@@ -187,12 +180,7 @@ def main() -> None:
         password = getpass.getpass("Password: ")
 
     print(f"Logging in as {username} ...", end=" ", flush=True)
-    try:
-        session_token, user_id = login(username, password)
-    except RuntimeError as e:
-        print(f"\nLogin failed: {e}")
-        sys.exit(1)
-    print("OK")
+    session_token, user_id = login(username, password)
 
     date_hint = (
         f" [{args.date_from or '...'} – {args.date_to or '...'}]"
@@ -200,22 +188,18 @@ def main() -> None:
         else ""
     )
     print(f"Fetching {args.export_type}{date_hint} ...", end=" ", flush=True)
-    try:
-        if args.export_type == "rides":
-            entries = get_tracks(
-                session_token, user_id, args.date_from, args.date_to, args.limit
-            )
-        else:
-            entries = get_routes(
-                session_token, user_id, args.date_from, args.date_to, args.limit
-            )  # planned
-    except RuntimeError as e:
-        print(f"\nError: {e}")
-        sys.exit(1)
+    if args.export_type == "rides":
+        entries = get_tracks(
+            session_token, user_id, args.date_from, args.date_to, args.limit
+        )
+    else:
+        entries = get_routes(
+            session_token, user_id, args.date_from, args.date_to, args.limit
+        )  # planned
     print(f"{len(entries)} found")
 
     if not entries:
-        print("Nothing found.")
+        print("No planned routes or tecked rides found.")
         return
 
     out_dir = Path(args.out)
@@ -283,3 +267,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

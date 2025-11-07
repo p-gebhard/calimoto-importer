@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
 Import a converted tour (output of convert.py) into Calimoto.
-
-Usage:
-    python import.py <converted-folder>
-    python import.py converted/sandnes_moskenes
 """
 
 import argparse

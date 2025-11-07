@@ -2,10 +2,6 @@
 """
 Derive a speed profile from real exported rides and save it as ride_profile.json.
 Run this once before using convert.py.
-
-Usage:
-    python calibrate.py <rides-folder>
-    python calibrate.py nordkapp/
 """
 
 import argparse

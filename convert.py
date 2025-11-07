@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
 Convert a planned route (export.py --type planned) to a completed ride.
-
-Usage:
-    python convert.py <planned-folder> --out <output-folder>
-    python convert.py <planned-folder> --out <output-folder> --date 2021-07-04 --name "My Ride"
 """
 
 import argparse
