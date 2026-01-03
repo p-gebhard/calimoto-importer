@@ -13,7 +13,8 @@ pip install -r requirements.txt
 
 ## Setup
 
-Copy `.env.example` to `.env` and fill in your credentials:
+Copy `.env.example` to `.env` and fill in your credentials.
+Also get the other values from a request body to the API, like POST https://parse-server.prod.calimoto.com/parse/classes/tblTourFeedPinned
 
 ```
 CALIMOTO_USERNAME=your@email.com
@@ -33,7 +34,7 @@ Inspect the traffic to Calimoto and collect the required values.
 
 ```bash
 python export.py --out nordkapp --from <YYYY-MM-DD> --to <YYYY-MM-DD>
-python export.py --out all_rides
+python export.py --out all_rides --type rides
 
 python export.py --out my_routes --type planned
 ```
@@ -42,15 +43,15 @@ Each entry is saved as a subfolder `<name>-<id>/` containing `meta.json`, data f
 
 ---
 
-### `calibrate.py` — Calibrate speed profile from real rides
+### `calibrate.py` — Train a riding HMM from real rides
 
-Run once before using `convert.py` to analyse exported rides and to derive approximate speed values per turn angle.
+Run once before using `convert.py`. It trains a Gaussian Hidden Markov Model on your exported rides to simulate your ride style best.
 
 ```bash
 python calibrate.py all_rides/
 ```
 
-Writes `ride_profile.json`, which is required by `convert.py` to generate a somewhat realistic drive.
+Writes `ride_profile.json` including HMM model parameters, which are required by `convert.py`.
 
 ---
 

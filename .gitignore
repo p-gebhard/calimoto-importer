@@ -1,0 +1,7 @@
+ride_profile.json
+all_rides/
+converted/
+.env
+elevation_cache.json
+my_routes/
+__pycache__/

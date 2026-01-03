@@ -6,12 +6,13 @@ Convert a planned route (export.py --type planned) to a completed ride.
 import argparse
 import json
 import math
-import random
 import requests
-import time
 
 from datetime import datetime
 from pathlib import Path
+
+import numpy as np
+from hmmlearn import hmm
 
 
 CACHE_FILE   = Path(__file__).parent / "elevation_cache.json"
@@ -37,6 +38,28 @@ def _turn_angle(p1, p2, p3) -> float:
     return 180 - math.degrees(
         math.acos(max(-1.0, min(1.0, (a**2 + c**2 - b**2) / (2 * a * c))))
     )
+
+
+def _slopes(points: list, altitudes: list, window_m: float, clip: float) -> list[float]:
+    n = min(len(points), len(altitudes))
+    if n < 2:
+        return [0.0] * n
+    cum = [0.0] * n
+    for i in range(1, n):
+        cum[i] = cum[i - 1] + _haversine_m(points[i - 1], points[i])
+    half = window_m / 2
+    slopes = [0.0] * n
+    for i in range(n):
+        a = i
+        while a > 0 and cum[i] - cum[a] < half:
+            a -= 1
+        b = i
+        while b < n - 1 and cum[b] - cum[i] < half:
+            b += 1
+        dd = cum[b] - cum[a]
+        s = 100.0 * (altitudes[b] - altitudes[a]) / dd if dd > 1.0 else 0.0
+        slopes[i] = max(-clip, min(clip, s))
+    return slopes
 
 
 def _chunks(lst, n):
@@ -151,37 +174,54 @@ def _fetch_elevations(points: list) -> list[float]:
 def _load_profile() -> dict:
     if not PROFILE_FILE.exists():
         raise FileNotFoundError(f"{PROFILE_FILE} not found — run calibrate.py first")
-    return json.loads(PROFILE_FILE.read_text())
+    profile = json.loads(PROFILE_FILE.read_text())
+    required = {"type", "n_states", "slope_window_m", "slope_clip", "speed_max",
+                "angle_mean", "steepness_mean", "speed_mean", "startprob", "transmat"}
+    if profile.get("type") != "gaussian_hmm" or not required <= profile.keys():
+        raise ValueError(
+            f"{PROFILE_FILE} is missing or outdated — re-run calibrate.py"
+        )
+    return profile
 
 
-def _simulate_ride(distances: list[float], angles: list[float]) -> tuple[list, list]:
+def _decode_states(angles: list[float], steepness: list[float], profile: dict) -> np.ndarray:
+    k = profile["n_states"]
+    model = hmm.GaussianHMM(n_components=k, covariance_type="diag")
+    model.startprob_ = np.asarray(profile["startprob"])
+    model.transmat_ = np.asarray(profile["transmat"])
+    model.means_ = np.column_stack([profile["angle_mean"], profile["steepness_mean"]])
+    model.covars_ = np.column_stack([profile["angle_var"], profile["steepness_var"]])
+    obs = np.column_stack([np.asarray(angles, dtype=float), np.asarray(steepness, dtype=float)])
+    return model.predict(obs)
+
+
+def _simulate_ride(
+    distances: list[float],
+    angles: list[float],
+    steepness: list[float],
+    max_speed: float,
+    seed: int | None = None,
+) -> tuple[list, list]:
     profile = _load_profile()
+    states = _decode_states(angles, steepness, profile)
+    speed_mean = profile["speed_mean"]
+    speed_std = [math.sqrt(v) for v in profile["speed_var"]]
 
-    def _bin(angle) -> dict:
-        if angle > 75: return profile["sharp"]
-        if angle > 50: return profile["medium"]
-        if angle > 25: return profile["light"]
-        return             profile["straight"]
-
-    rng = random.Random()
-    start = _bin(0)
-    speeds, dates, cum_t = [], [], 0.0
-    prev = max(0.1, rng.normalvariate(start["mean"] * 0.15, start["stdev"]))
-    speeds.append(prev)
-    dates.append(cum_t)
-
-    for dist, angle in zip(distances, angles):
-        b  = _bin(angle)
-        ms = b["mean"]
-        s  = max(0.1, rng.normalvariate(ms - (ms - prev) / 3, b["stdev"]))
+    rng = np.random.default_rng(seed)
+    speeds: list[float] = []
+    prev = min(max_speed, speed_mean[states[0]])
+    for st in states:
+        mu, sd = speed_mean[st], speed_std[st]
+        s = min(max_speed, max(0.5, rng.normal(mu - (mu - prev) / 3, sd)))
         speeds.append(s)
-        cum_t += dist / s
-        dates.append(cum_t)
         prev = s
 
-    speeds.append(prev)
-    cum_t += (distances[-1] if distances else 0) / prev
-    dates.append(cum_t)
+    dates = [0.0]
+    cum_s = 0.0
+    for i, dist in enumerate(distances):
+        seg_speed = (speeds[i] + speeds[i + 1]) / 2
+        cum_s += dist / seg_speed
+        dates.append(cum_s * 1000)  # Calimoto stores timestamps in milliseconds
     return speeds, dates
 
 
@@ -197,6 +237,13 @@ def main():
         "--date", default=None, metavar="YYYY-MM-DD", help="Ride date (default: today)"
     )
     parser.add_argument("--name", default=None, help="Ride name (default: from route)")
+    parser.add_argument(
+        "--max-speed",
+        type=float,
+        default=None,
+        metavar="KMH",
+        help="Cap speed at KMH km/h (default: maximum speed from the training data)",
+    )
     args = parser.parse_args()
 
     in_dir = Path(args.input)
@@ -210,19 +257,33 @@ def main():
 
     altitudes = _fetch_elevations(points)
     distances = [_haversine_m(points[i], points[i + 1]) for i in range(len(points) - 1)]
-    angles = [
-        _turn_angle(points[i], points[i + 1], points[i + 2])
-        for i in range(len(points) - 2)
-    ]
-    angles.append(0.0)
-    speeds, dates = _simulate_ride(distances, angles)
+    angles = (
+        [0.0]
+        + [
+            _turn_angle(points[i - 1], points[i], points[i + 1])
+            for i in range(1, len(points) - 1)
+        ]
+        + [0.0]
+    )  # one turn angle per point (0 at the endpoints)
+    profile = _load_profile()
+    slopes = _slopes(
+        points, altitudes, profile["slope_window_m"], profile["slope_clip"]
+    )  # signed grade per point, computed from the fetched elevations
+    steepness = [abs(s) for s in slopes]  # speed depends on |grade|, not its sign
+    max_speed = profile["speed_max"]
+    if args.max_speed is not None:
+        max_speed = min(max_speed, args.max_speed / 3.6)  # km/h → m/s, never above training max
+    print(f"  Speed cap: {max_speed * 3.6:.1f} km/h")
+    speeds, dates = _simulate_ride(distances, angles, steepness, max_speed)
 
+    distance = int(sum(distances))
+    duration = round(dates[-1] / 1000)  # dates are ms; duration is seconds
     ride_date = args.date or datetime.now().strftime("%Y-%m-%d")
     tour = {
         "name": args.name or meta.get("name", f"Tour vom {ride_date}"),
-        "distance": int(sum(distances)),
-        "duration": round(dates[-1]),
-        "speedAverage": round(sum(speeds) / len(speeds), 1),
+        "distance": distance,
+        "duration": duration,
+        "speedAverage": round(distance / duration, 2) if duration else 0,
         "speedMax": round(max(speeds), 2),
         "altitudeMax": round(max(altitudes)),
         "altitudeMin": round(min(altitudes)),
