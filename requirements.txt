@@ -4,3 +4,5 @@ staticmap
 Pillow
 gpxpy
 lxml
+hmmlearn
+numpy
